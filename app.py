@@ -1069,8 +1069,9 @@ def clear_cache():
         }), 500
 
 @app.route('/api/data', methods=['GET'])
-def get_data():
-    """Fetch all data from Google Sheets (excluding Re-edit entries)"""
+@token_required
+def get_data(current_user):
+    """Fetch all data from Google Sheets (excluding Re-edit entries) - PROTECTED"""
     try:
         records = get_sheet_data()
         if records is None:
@@ -1094,8 +1095,9 @@ def get_data():
         }), 500
 
 @app.route('/api/filters', methods=['GET'])
-def get_filters():
-    """Get unique values for filters (categories, subcategories, subjects) - excluding Re-edit entries"""
+@token_required
+def get_filters(current_user):
+    """Get unique values for filters (categories, subcategories, subjects) - PROTECTED"""
     try:
         records = get_sheet_data()
         if records is None:
@@ -1574,8 +1576,9 @@ def cleanup_completed_downloads():
         }), 500
 
 @app.route('/api/add', methods=['POST'])
-def add_row():
-    """Add a new row to the sheet using Apps Script webhook or direct API"""
+@token_required
+def add_row(current_user):
+    """Add a new row to the sheet using Apps Script webhook or direct API - PROTECTED"""
     try:
         data = request.get_json()
 
@@ -1820,8 +1823,9 @@ def delete_row(row_id):
         }), 500
 
 @app.route('/api/categories', methods=['GET'])
-def get_categories():
-    """Get predefined categories and subcategories"""
+@token_required
+def get_categories(current_user):
+    """Get predefined categories and subcategories - PROTECTED"""
     try:
         categories = {
             "Exam Pattern": [
@@ -1930,8 +1934,9 @@ def get_categories():
         }), 500
 
 @app.route('/api/exams', methods=['GET'])
-def get_exams():
-    """Get exam details with subjects"""
+@token_required
+def get_exams(current_user):
+    """Get exam details with subjects - PROTECTED"""
     try:
         exams = {
             "Bank Pre": {
@@ -2822,6 +2827,111 @@ def health_check():
         return jsonify({
             'status': 'error',
             'error': str(e)
+        }), 500
+
+@app.route('/api/leaderboard', methods=['GET'])
+@token_required
+def get_leaderboard(current_user):
+    """Get leaderboard data grouped by vertical - PROTECTED"""
+    try:
+        records = get_sheet_data()
+        if records is None:
+            return jsonify({
+                "success": False,
+                "error": "Failed to access sheet"
+            }), 500
+
+        # Group by vertical and calculate stats
+        vertical_stats = {}
+
+        for record in records:
+            vertical = record.get('Vertical Name', '').strip()
+            if not vertical:
+                continue
+
+            if vertical not in vertical_stats:
+                vertical_stats[vertical] = {
+                    'name': vertical,
+                    'totalVideos': 0,
+                    'finalVideos': 0,
+                    'reEditVideos': 0,
+                    'exams': set(),
+                    'subjects': set(),
+                    'contributors': {}
+                }
+
+            # Count total videos
+            vertical_stats[vertical]['totalVideos'] += 1
+
+            # Count by status
+            status = str(record.get('Edit', '')).strip().lower()
+            if status == 'final' or 'final' in status:
+                vertical_stats[vertical]['finalVideos'] += 1
+            elif status == 're-edit' or 'reedit' in status or 're-edit' in status:
+                vertical_stats[vertical]['reEditVideos'] += 1
+
+            # Collect unique exams and subjects
+            exam = record.get('Exam Name', '').strip()
+            if exam:
+                vertical_stats[vertical]['exams'].add(exam)
+
+            subject = record.get('Subject', '').strip()
+            if subject:
+                vertical_stats[vertical]['subjects'].add(subject)
+
+            # Track contributors
+            email = record.get('Email', '').strip()
+            if email:
+                if email not in vertical_stats[vertical]['contributors']:
+                    vertical_stats[vertical]['contributors'][email] = 0
+                vertical_stats[vertical]['contributors'][email] += 1
+
+        # Format results
+        leaderboard = []
+        for vertical, stats in vertical_stats.items():
+            # Get top 5 contributors with earnings (₹50 per video)
+            top_contributors = sorted(
+                [{'email': email, 'count': count, 'earnings': count * 50} for email, count in stats['contributors'].items()],
+                key=lambda x: x['count'],
+                reverse=True
+            )[:5]
+
+            leaderboard.append({
+                'name': vertical,
+                'totalVideos': stats['totalVideos'],
+                'finalVideos': stats['finalVideos'],
+                'reEditVideos': stats['reEditVideos'],
+                'examsCount': len(stats['exams']),
+                'subjectsCount': len(stats['subjects']),
+                'exams': list(stats['exams']),
+                'subjects': list(stats['subjects']),
+                'topContributors': top_contributors
+            })
+
+        # Sort by total videos (descending)
+        leaderboard.sort(key=lambda x: x['totalVideos'], reverse=True)
+
+        # Calculate summary
+        summary = {
+            'totalVerticals': len(leaderboard),
+            'totalVideos': sum(v['totalVideos'] for v in leaderboard),
+            'totalFinalVideos': sum(v['finalVideos'] for v in leaderboard),
+            'totalReEditVideos': sum(v['reEditVideos'] for v in leaderboard)
+        }
+
+        return jsonify({
+            "success": True,
+            "leaderboard": leaderboard,
+            "summary": summary
+        })
+
+    except Exception as e:
+        logger.error(f"Error fetching leaderboard: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": str(e)
         }), 500
 
 # Export app for Vercel serverless
