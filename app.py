@@ -2091,7 +2091,8 @@ def get_exams(current_user):
                     "CGL",
                     "Delhi Police",
                     "CPO",
-                    "Steno"
+                    "Steno",
+                    "Selection Post"
                 ],
                 "subjects": [
                     "Other",
