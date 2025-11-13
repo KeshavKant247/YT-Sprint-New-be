@@ -210,7 +210,8 @@ def add_cors_headers(response):
         "http://127.0.0.1:3000"
     ]
 
-    if origin in allowed_origins:
+    # Allow any Vercel preview deployment URLs
+    if origin and (origin in allowed_origins or '.vercel.app' in origin):
         response.headers['Access-Control-Allow-Origin'] = origin
         response.headers['Access-Control-Allow-Credentials'] = 'true'
         response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS, HEAD'
