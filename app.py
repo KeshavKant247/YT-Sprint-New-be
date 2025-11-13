@@ -386,6 +386,88 @@ def get_sheet_data():
         traceback.print_exc()
         return None
 
+def get_reedit_data():
+    """Fetch data from the Re-edit (Drive Links) sheet using Google Visualization API with caching"""
+    try:
+        # Check cache first
+        cache_key = f'reedit_data_{SHEET_ID}_{REEDIT_GID}'
+        cached_data = sheets_cache.get(cache_key)
+        if cached_data is not None:
+            logger.debug(f"Returning cached re-edit data ({len(cached_data)} records)")
+            return cached_data
+
+        # Use Google Visualization API with REEDIT_GID
+        url = f'https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:json&gid={REEDIT_GID}'
+
+        response = requests.get(url, timeout=10)
+
+        if response.status_code == 200:
+            # Remove the JavaScript wrapper
+            json_str = response.text
+            json_str = re.search(r'google\.visualization\.Query\.setResponse\((.*)\);', json_str)
+
+            if json_str:
+                data = json.loads(json_str.group(1))
+
+                if data.get('status') == 'ok':
+                    table = data.get('table', {})
+                    cols = table.get('cols', [])
+                    rows = table.get('rows', [])
+
+                    # Extract headers
+                    headers = [col.get('label', col.get('id', '')) for col in cols]
+
+                    # Skip first row if it contains headers
+                    if rows and len(rows) > 0:
+                        first_row_values = [(cell.get('v') if cell and cell.get('v') is not None else '') for cell in rows[0].get('c', [])]
+
+                        # Check if first row is actually headers
+                        if first_row_values == headers or 'Sr no.' in first_row_values:
+                            headers = first_row_values
+                            rows = rows[1:]
+
+                    # Convert to list of dictionaries
+                    records = []
+                    for row in rows:
+                        cells = row.get('c', [])
+                        values = [(cell.get('v') if cell and cell.get('v') is not None else '') for cell in cells]
+
+                        # Pad with empty strings if needed
+                        values = values + [''] * (len(headers) - len(values))
+
+                        record = dict(zip(headers, values))
+
+                        # Clean up Sr no. field - remove leading single quote
+                        if 'Sr no.' in record and isinstance(record['Sr no.'], str):
+                            record['Sr no.'] = record['Sr no.'].lstrip("'")
+
+                        records.append(record)
+
+                    # Cache the results
+                    sheets_cache.set(cache_key, records)
+                    logger.debug(f"Cached re-edit data ({len(records)} records)")
+
+                    return records
+                else:
+                    print(f"Error from Re-edit API: {data.get('status')}")
+                    return []
+            else:
+                print("Could not parse Re-edit JSON response")
+                return []
+        else:
+            print(f"Error fetching re-edit data: {response.status_code} - {response.text}")
+            return []
+
+    except Exception as e:
+        error_msg = str(e)
+        try:
+            logger.error(f"Error accessing re-edit sheet: {error_msg}")
+        except:
+            print(f"Error accessing re-edit sheet: {error_msg}")
+        import traceback
+        traceback.print_exc()
+        return []
+
 def get_credentials_data():
     """Fetch credentials from the specific credentials sheet tab with caching"""
     try:
@@ -1074,24 +1156,35 @@ def clear_cache():
 @app.route('/api/data', methods=['GET'])
 @token_required
 def get_data(current_user):
-    """Fetch all data from Google Sheets (excluding Re-edit entries) - PROTECTED"""
+    """Fetch all data from Google Sheets including Re-edit entries from Drive Links - PROTECTED"""
     try:
+        # Fetch both final entries and re-edit entries
         records = get_sheet_data()
+        reedit_records = get_reedit_data()
+
         if records is None:
             return jsonify({"error": "Failed to access sheet"}), 500
 
-        # Filter out Re-edit entries (they should be in separate sheet, but just in case)
-        filtered_records = [
+        # Filter out Re-edit entries from main sheet (they should be in Drive Links sheet)
+        final_records = [
             record for record in records
             if record.get('Edit', '').lower() != 're-edit'
         ]
 
+        # Combine final records and re-edit records
+        all_records = final_records + reedit_records
+
+        logger.info(f"Fetched {len(final_records)} final records and {len(reedit_records)} re-edit records, total: {len(all_records)}")
+
         return jsonify({
             "success": True,
-            "data": filtered_records,
-            "count": len(filtered_records)
+            "data": all_records,
+            "count": len(all_records),
+            "finalCount": len(final_records),
+            "reEditCount": len(reedit_records)
         })
     except Exception as e:
+        logger.error(f"Error in get_data: {e}")
         return jsonify({
             "success": False,
             "error": str(e)
@@ -2835,18 +2928,24 @@ def health_check():
 @app.route('/api/leaderboard', methods=['GET'])
 @token_required
 def get_leaderboard(current_user):
-    """Get leaderboard data grouped by vertical - PROTECTED"""
+    """Get leaderboard data grouped by vertical - PROTECTED - includes both Final entries and Re-edit (Drive Links) entries"""
     try:
+        # Fetch both final entries and re-edit entries
         records = get_sheet_data()
+        reedit_records = get_reedit_data()
+
         if records is None:
             return jsonify({
                 "success": False,
                 "error": "Failed to access sheet"
             }), 500
 
+        logger.info(f"Fetched {len(records)} final records and {len(reedit_records)} re-edit records")
+
         # Group by vertical and calculate stats
         vertical_stats = {}
 
+        # Process final entries
         for record in records:
             vertical = record.get('Vertical Name', '').strip()
             if not vertical:
@@ -2860,7 +2959,8 @@ def get_leaderboard(current_user):
                     'reEditVideos': 0,
                     'exams': set(),
                     'subjects': set(),
-                    'contributors': {}
+                    'finalContributors': {},  # Separate tracking for final videos
+                    'reEditContributors': {}   # Separate tracking for re-edit videos
                 }
 
             # Count total videos
@@ -2870,8 +2970,23 @@ def get_leaderboard(current_user):
             status = str(record.get('Edit', '')).strip().lower()
             if status == 'final' or 'final' in status:
                 vertical_stats[vertical]['finalVideos'] += 1
+
+                # Track final contributors
+                email = record.get('Email', '').strip()
+                if email:
+                    if email not in vertical_stats[vertical]['finalContributors']:
+                        vertical_stats[vertical]['finalContributors'][email] = 0
+                    vertical_stats[vertical]['finalContributors'][email] += 1
+
             elif status == 're-edit' or 'reedit' in status or 're-edit' in status:
                 vertical_stats[vertical]['reEditVideos'] += 1
+
+                # Track re-edit contributors from main sheet
+                email = record.get('Email', '').strip()
+                if email:
+                    if email not in vertical_stats[vertical]['reEditContributors']:
+                        vertical_stats[vertical]['reEditContributors'][email] = 0
+                    vertical_stats[vertical]['reEditContributors'][email] += 1
 
             # Collect unique exams and subjects
             exam = record.get('Exam Name', '').strip()
@@ -2882,19 +2997,57 @@ def get_leaderboard(current_user):
             if subject:
                 vertical_stats[vertical]['subjects'].add(subject)
 
-            # Track contributors
+        # Process re-edit entries from Drive Links sheet
+        for record in reedit_records:
+            vertical = record.get('Vertical Name', '').strip()
+            if not vertical:
+                continue
+
+            if vertical not in vertical_stats:
+                vertical_stats[vertical] = {
+                    'name': vertical,
+                    'totalVideos': 0,
+                    'finalVideos': 0,
+                    'reEditVideos': 0,
+                    'exams': set(),
+                    'subjects': set(),
+                    'finalContributors': {},
+                    'reEditContributors': {}
+                }
+
+            # Count re-edit videos (all entries in Drive Links sheet are re-edits)
+            vertical_stats[vertical]['totalVideos'] += 1
+            vertical_stats[vertical]['reEditVideos'] += 1
+
+            # Track re-edit contributors from Drive Links sheet
             email = record.get('Email', '').strip()
             if email:
-                if email not in vertical_stats[vertical]['contributors']:
-                    vertical_stats[vertical]['contributors'][email] = 0
-                vertical_stats[vertical]['contributors'][email] += 1
+                if email not in vertical_stats[vertical]['reEditContributors']:
+                    vertical_stats[vertical]['reEditContributors'][email] = 0
+                vertical_stats[vertical]['reEditContributors'][email] += 1
+
+            # Collect unique exams and subjects
+            exam = record.get('Exam Name', '').strip()
+            if exam:
+                vertical_stats[vertical]['exams'].add(exam)
+
+            subject = record.get('Subject', '').strip()
+            if subject:
+                vertical_stats[vertical]['subjects'].add(subject)
 
         # Format results
         leaderboard = []
         for vertical, stats in vertical_stats.items():
-            # Get top 5 contributors with earnings (₹50 per video)
-            top_contributors = sorted(
-                [{'email': email, 'count': count, 'earnings': count * 50} for email, count in stats['contributors'].items()],
+            # Get top 5 final contributors with earnings (₹50 per video)
+            top_final_contributors = sorted(
+                [{'email': email, 'count': count, 'earnings': count * 50} for email, count in stats['finalContributors'].items()],
+                key=lambda x: x['count'],
+                reverse=True
+            )[:5]
+
+            # Get top 5 re-edit contributors with earnings (₹50 per video)
+            top_reedit_contributors = sorted(
+                [{'email': email, 'count': count, 'earnings': count * 50} for email, count in stats['reEditContributors'].items()],
                 key=lambda x: x['count'],
                 reverse=True
             )[:5]
@@ -2908,7 +3061,8 @@ def get_leaderboard(current_user):
                 'subjectsCount': len(stats['subjects']),
                 'exams': list(stats['exams']),
                 'subjects': list(stats['subjects']),
-                'topContributors': top_contributors
+                'topFinalContributors': top_final_contributors,
+                'topReEditContributors': top_reedit_contributors
             })
 
         # Sort by total videos (descending)
