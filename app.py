@@ -2471,6 +2471,10 @@ def get_exams(current_user):
                     "Food Science & Technology",
                     "Other"
                 ]
+            },
+            "Spoken English": {
+                "exams": ["All"],
+                "subjects": ["English"]
             }
         }
 
