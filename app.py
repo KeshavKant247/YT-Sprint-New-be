@@ -355,6 +355,19 @@ def get_sheet_data():
 
                         record = dict(zip(headers, values))
 
+                        # Skip completely empty rows or rows without essential data
+                        # Check if row has at least one non-empty value in key columns
+                        has_data = any([
+                            record.get('Vertical Name', '').strip(),
+                            record.get('Email', '').strip(),
+                            record.get('Exam Name', '').strip(),
+                            record.get('Subject', '').strip(),
+                            record.get('Type of Content', '').strip()
+                        ])
+
+                        if not has_data:
+                            continue
+
                         # Clean up Sr no. field - remove leading single quote
                         if 'Sr no.' in record and isinstance(record['Sr no.'], str):
                             record['Sr no.'] = record['Sr no.'].lstrip("'")
@@ -436,6 +449,19 @@ def get_reedit_data():
                         values = values + [''] * (len(headers) - len(values))
 
                         record = dict(zip(headers, values))
+
+                        # Skip completely empty rows or rows without essential data
+                        # Check if row has at least one non-empty value in key columns
+                        has_data = any([
+                            record.get('Vertical Name', '').strip(),
+                            record.get('Email', '').strip(),
+                            record.get('Exam Name', '').strip(),
+                            record.get('Subject', '').strip(),
+                            record.get('Type of Content', '').strip()
+                        ])
+
+                        if not has_data:
+                            continue
 
                         # Clean up Sr no. field - remove leading single quote
                         if 'Sr no.' in record and isinstance(record['Sr no.'], str):
