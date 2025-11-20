@@ -72,3 +72,9 @@ Columns:
 - Edit
 - Editor Brief
 - Final Edited Link
+
+---
+
+## Credits
+
+Made by **AI-Operations Team**
